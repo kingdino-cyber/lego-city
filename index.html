@@ -743,9 +743,9 @@
   }
   .blocktube-create:hover{ filter: brightness(0.7); }
   .blocktube-create svg{ width:15px; height:15px; }
-  .video-grid{ display:flex; flex-direction:column; gap:14px; }
+  .video-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:16px; }
   .video-tile{
-    display:flex; gap:12px; text-align:left; border:none; cursor:pointer; padding:0; position:relative;
+    display:flex; flex-direction:column; text-align:left; border:none; cursor:pointer; padding:0; position:relative;
     background: var(--surface); border:1px solid var(--line); border-radius:16px; overflow:hidden;
     transition: filter .12s ease;
   }
@@ -762,15 +762,15 @@
   .video-tile:hover .video-tile-dots, .video-tile:focus-within .video-tile-dots{ opacity:1; }
   @media (hover:none){ .video-tile-dots{ opacity:.85; } }
   .video-thumb{
-    position:relative; flex-shrink:0; width:130px; aspect-ratio:16/10; background: var(--bg-soft);
-    background-size:cover; background-position:center;
+    position:relative; flex-shrink:0; width:100%; aspect-ratio:16/10; background: var(--bg-soft);
+    background-size:contain; background-repeat:no-repeat; background-position:center;
   }
   .video-thumb .badge-play{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     color:#fff; opacity:.9; filter: drop-shadow(0 2px 6px rgba(0,0,0,.6));
   }
   .video-thumb .badge-play svg{ width:30px; height:30px; }
-  .video-tile-body{ flex:1; min-width:0; padding:10px 14px 10px 0; display:flex; flex-direction:column; justify-content:center; gap:3px; }
+  .video-tile-body{ min-width:0; padding:10px 14px 12px; display:flex; flex-direction:column; gap:3px; }
   .video-tile-title{ font-family:'Baloo 2',sans-serif; font-weight:800; font-size:.98rem; color: var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .video-tile-creator{ color: var(--ink-soft); font-weight:700; font-size:.8rem; }
   .video-tile-stats{ display:flex; gap:10px; color: var(--ink-faint); font-weight:700; font-size:.76rem; margin-top:2px; }
