@@ -1542,6 +1542,11 @@
       if (!titleVal){ errorEl.textContent = "Give it a title."; return; }
       if (!creatorVal){ errorEl.textContent = "Tell us who made it."; return; }
       if (!videoFile){ errorEl.textContent = "Choose an MP4 to upload."; return; }
+      const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+      if (videoFile.size > MAX_VIDEO_BYTES){
+        errorEl.textContent = "That file is " + (videoFile.size / (1024*1024)).toFixed(0) + "MB — videos must be under 50MB. Try compressing it first.";
+        return;
+      }
       errorEl.textContent = "";
       const btn = backdrop.querySelector("#vidSubmit");
       btn.disabled = true; btn.textContent = "Uploading…";
