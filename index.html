@@ -438,6 +438,11 @@
     padding: 4px 10px; border-radius:999px; background: var(--tile-accent, var(--carrot)); color:#fff;
   }
   .post-date{ color: var(--ink-faint); font-weight:700; font-size:.82rem; }
+  .post-finished{
+    font-family:'Baloo 2',sans-serif; font-weight:700; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+    padding: 4px 10px; border-radius:999px; background:#57534b; color:#f4efe4;
+  }
+  .finished-note{ margin: 4px 0 12px; padding: 12px 14px; border-radius:12px; background: var(--bg-soft); color: var(--ink-soft); font-weight:700; font-size:.9rem; text-align:center; }
   .post-body h2{ font-size:1.5rem; margin-bottom:12px; }
   .post-body p{ line-height:1.6; color: var(--ink-soft); font-weight:500; margin:0 0 12px; }
   .post-eyebrow{
@@ -584,13 +589,14 @@
   .menu-sheet{ display:flex; flex-direction:column; gap:8px; }
   .menu-item{
     width:100%; text-align:left; padding:14px 16px; border-radius:12px; border:none;
-    background: var(--bg-soft); color: var(--ink);
+    background: #57534b; color: #f4efe4;
     font-family:'Baloo 2',sans-serif; font-weight:700; font-size:1rem; cursor:pointer;
     transition: filter .12s ease;
   }
-  .menu-item:hover{ filter: brightness(0.7); }
+  .menu-item:hover{ filter: brightness(1.2); }
   .menu-item.danger{ color:#fff; background: var(--brick-red); }
-  .menu-item.cancel{ background:transparent; color: var(--ink-soft); text-align:center; }
+  .menu-item.danger:hover{ filter: brightness(0.8); }
+  .menu-item.cancel{ text-align:center; }
 
   /* ---------- kind selector (project creation) ---------- */
   .kind-grid{ display:grid; grid-template-columns: repeat(2,1fr); gap:8px; }
@@ -621,6 +627,8 @@
     transition: filter .12s ease;
   }
   .poll-row:hover{ filter: brightness(0.7); }
+  .poll-row:disabled{ cursor:default; }
+  .poll-row:disabled:hover{ filter:none; }
   .poll-fill{
     position:absolute; inset:0; width:0; background: rgba(238,122,18,.22);
     transition: width .4s ease;
@@ -1722,7 +1730,7 @@
           accent: kind.accent,
           icon: kind.icon,
           title: p.title || "Untitled",
-          meta: fmtDate(p.createdAt),
+          meta: fmtDate(p.createdAt) + (p.finished ? " · Finished" : ""),
           editable: true
         }));
         tile.addEventListener("click", function(){ render("post", p); });
@@ -1749,17 +1757,32 @@
 
   function openPostMenu(post, type){
     const kind = POST_KIND[type];
-    openMenu([
-      { label: "Edit", onClick: function(){ openPostModal(type, post); } },
-      { label: "Discard", danger: true, onClick: function(){
-          openConfirm(
-            "This " + kind.label.toLowerCase() + " will be removed for good.",
-            "Discard",
-            function(){ PostsStore.remove(post.id); }
-          );
-        }
-      }
-    ]);
+    const actions = [{ label: "Edit", onClick: function(){ openPostModal(type, post); } }];
+    if (type === "project" && !post.finished){
+      actions.push({ label: "Finish", onClick: function(){
+        openConfirm(
+          "This project will stop collecting signatures, votes and donations.",
+          "Finish",
+          async function(){
+            try{
+              await PostsStore.update(post.id, { finished: true });
+              toast("Project finished");
+            }catch(err){
+              console.error(err);
+              toast("Couldn’t finish this project — try again.");
+            }
+          }
+        );
+      } });
+    }
+    actions.push({ label: "Discard", danger: true, onClick: function(){
+      openConfirm(
+        "This " + kind.label.toLowerCase() + " will be removed for good.",
+        "Discard",
+        function(){ PostsStore.remove(post.id); }
+      );
+    } });
+    openMenu(actions);
   }
 
   function projectKindOf(post){
@@ -1770,6 +1793,7 @@
   function PostView(post){
     const kind = POST_KIND[post.type] || POST_KIND.article;
     const pKind = projectKindOf(post);
+    const finished = !!post.finished;
     const donationColor = (pKind === "donation" && post.donationColor) ? post.donationColor : "#f4b400";
     const donationTextColor = textColorFor(donationColor);
     const bodyParagraphs = String(post.body || "").split(/\n+/).filter(Boolean)
@@ -1782,13 +1806,14 @@
             ? '<div class="post-banner" style="background-image:url(\'' + post.photo + '\')"><div class="post-banner-scrim"></div></div>'
             : '<div class="post-banner no-photo" style="--tile-accent:' + kind.accent + '">' + kind.icon.replace('class="tile-icon-generic"','') + "</div>") +
           '<div class="post-body">' +
-            '<div class="post-meta"><span class="post-badge" style="background:' + kind.accent + '">' + kind.label + '</span><span class="post-date">' + fmtDate(post.createdAt) + "</span></div>" +
+            '<div class="post-meta"><span class="post-badge" style="background:' + kind.accent + '">' + kind.label + '</span><span class="post-date">' + fmtDate(post.createdAt) + "</span>" + (finished ? '<span class="post-finished">Finished</span>' : "") + "</div>" +
             (pKind === "donation" && post.donationEyebrow
               ? '<span class="post-eyebrow" style="background:' + donationColor + "; color:" + donationTextColor + '">' + escapeHtml(post.donationEyebrow) + "</span>"
               : "") +
             "<h2>" + escapeHtml(post.title || "Untitled") + "</h2>" +
             bodyParagraphs +
-            (pKind === "donation" ? '<button class="donate-cta" id="openProjectDonate" style="background:' + donationColor + "; color:" + donationTextColor + "; --glow-rgb:" + hexToRgb(donationColor) + ';">Donate</button>' : "") +
+            (pKind === "donation" && !finished ? '<button class="donate-cta" id="openProjectDonate" style="background:' + donationColor + "; color:" + donationTextColor + "; --glow-rgb:" + hexToRgb(donationColor) + ';">Donate</button>' : "") +
+            (pKind === "donation" && finished ? '<div class="finished-note">This project has finished and is no longer accepting donations.</div>' : "") +
             (pKind === "poll" ? '<div id="pollBody"></div>' : "") +
             (pKind === "petition" ? '<div id="petitionBody"></div>' : "") +
             (post.type === "article" ? '<button class="comment-cta" id="openComment">' + ICONS.comment + ' Comment</button><div id="commentsBody"></div>' : "") +
@@ -1801,8 +1826,9 @@
     );
     wrap.querySelector("#toList").addEventListener("click", function(){ render(kind.backTo); });
     if (pKind === "donation"){
-      const ctx = { projectId: post.id, title: post.title, kicker: post.title, back: { view: "post", arg: post } };
-      wrap.querySelector("#openProjectDonate").addEventListener("click", function(){ openDonateModal(ctx); });
+      const ctx = { projectId: post.id, title: post.title, kicker: post.title, back: { view: "post", arg: post }, finished: finished };
+      const donateBtn = wrap.querySelector("#openProjectDonate");
+      if (donateBtn) donateBtn.addEventListener("click", function(){ openDonateModal(ctx); });
       wrap.querySelector("#toProjectLeaderboard").addEventListener("click", function(){ render("leaderboard", ctx); });
     }
     if (pKind === "poll") renderPoll(wrap.querySelector("#pollBody"), post);
@@ -1810,6 +1836,13 @@
     if (post.type === "article"){
       wrap.querySelector("#openComment").addEventListener("click", function(){ openCommentModal(post); });
       renderComments(wrap.querySelector("#commentsBody"), post);
+    }
+    if (post.type === "project"){
+      if (unsubscribePosts) unsubscribePosts();
+      unsubscribePosts = PostsStore.subscribe(function(list){
+        const fresh = list.find(function(p){ return p.id === post.id; });
+        if (fresh && wrap.isConnected && !!fresh.finished !== finished) render("post", fresh);
+      });
     }
     return wrap;
   }
@@ -1824,12 +1857,12 @@
       let html = '<div class="poll-list">';
       options.forEach(function(opt, i){
         const pct = total > 0 ? Math.round((counts[i] / total) * 100) : 0;
-        html += '<button type="button" class="poll-row" data-i="' + i + '">' +
+        html += '<button type="button" class="poll-row" data-i="' + i + '"' + (post.finished ? " disabled" : "") + '>' +
           '<div class="poll-fill" style="width:' + pct + '%"></div>' +
           '<div class="poll-row-content"><span>' + escapeHtml(opt) + "</span><span>" + pct + "% · " + counts[i] + "</span></div>" +
         "</button>";
       });
-      html += '</div><div class="poll-meta">' + total + (total === 1 ? " vote" : " votes") + " — vote as many times as you like</div>";
+      html += '</div><div class="poll-meta">' + total + (total === 1 ? " vote" : " votes") + (post.finished ? " — voting has closed" : " — vote as many times as you like") + "</div>";
       container.innerHTML = html;
       container.querySelectorAll(".poll-row").forEach(function(btn){
         btn.addEventListener("click", function(){
@@ -1881,8 +1914,8 @@
       let html = '<div class="petition-box">' +
         '<div class="petition-count-label">Signatures</div>' +
         '<div class="petition-count">' + sigs.length + "</div>" +
-        '<button type="button" class="sign-cta" id="signBtn">Sign this petition</button>' +
-        '<div class="poll-meta">You can sign as many times as you like</div>' +
+        (post.finished ? "" : '<button type="button" class="sign-cta" id="signBtn">Sign this petition</button>') +
+        '<div class="poll-meta">' + (post.finished ? "This petition has closed" : "You can sign as many times as you like") + "</div>" +
         "</div>" +
         (sigs.length
           ? '<div class="signer-list">' + sigs.map(function(s){
@@ -2387,13 +2420,12 @@
           "<h2>Wall of Honour</h2>" +
         "</div>" +
         '<div id="lbBody"></div>' +
-        '<div class="lb-actions">' +
-          '<button class="brick brick-carrot" id="lbDonate">Donate more</button>' +
-        "</div>" +
+        (ctx.finished ? "" : '<div class="lb-actions"><button class="brick brick-carrot" id="lbDonate">Donate more</button></div>') +
       "</div>"
     );
     wrap.querySelector("#toBackTarget").addEventListener("click", function(){ render(ctx.back.view, ctx.back.arg); });
-    wrap.querySelector("#lbDonate").addEventListener("click", function(){
+    const lbDonate = wrap.querySelector("#lbDonate");
+    if (lbDonate) lbDonate.addEventListener("click", function(){
       render(ctx.back.view, ctx.back.arg);
       setTimeout(function(){ openDonateModal(ctx); }, 20);
     });
