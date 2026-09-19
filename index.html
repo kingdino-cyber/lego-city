@@ -906,13 +906,18 @@
     }
     function emitLocal(){ emit(sortLocal(local)); }
 
+    let fetchSeq = 0;
+    let realtimeOk = false;
+
     async function fetchAll(){
+      const mySeq = ++fetchSeq;
       const { data, error } = await supa
         .from(table)
         .select("*")
         .order(orderCol, { ascending: orderDir !== "desc" })
         .limit(300);
       if (error){ console.error("lego city db error (" + collectionName + ")", error); return; }
+      if (mySeq !== fetchSeq) return;
       emit(data.map(rowToCamel));
     }
 
@@ -921,13 +926,17 @@
       emitLocal();
       if (supa){
         usingDb = true;
+        try{ await fetchAll(); }catch(e){ console.error(e); }
         try{
-          await fetchAll();
           supa
             .channel(table + "-changes")
             .on("postgres_changes", { event: "*", schema: "public", table: table }, fetchAll)
-            .subscribe();
-        }catch(e){ console.error(e); }
+            .subscribe(function(status){ realtimeOk = (status === "SUBSCRIBED"); });
+        }catch(e){ realtimeOk = false; console.error(e); }
+        // Networks that block WebSockets never deliver live updates, so poll as a fallback.
+        setInterval(function(){ if (!realtimeOk && !document.hidden) fetchAll(); }, 15000);
+        document.addEventListener("visibilitychange", function(){ if (!document.hidden) fetchAll(); });
+        window.addEventListener("online", fetchAll);
       }
     }
 
@@ -945,6 +954,7 @@
       if (usingDb){
         const { data, error } = await supa.from(table).insert(entryToSnake(entry)).select().single();
         if (error) throw error;
+        await fetchAll();
         return data.id;
       } else {
         const id = "local-" + Date.now() + "-" + Math.random().toString(36).slice(2);
@@ -959,6 +969,7 @@
       if (usingDb){
         const { error } = await supa.from(table).update(entryToSnake(patch)).eq("id", id);
         if (error) throw error;
+        await fetchAll();
       } else {
         const item = local.find(function(x){ return x.id === id; });
         if (item) Object.assign(item, patch);
@@ -971,6 +982,7 @@
       if (usingDb){
         const { error } = await supa.from(table).delete().eq("id", id);
         if (error) throw error;
+        await fetchAll();
       } else {
         local = local.filter(function(x){ return x.id !== id; });
         saveLocal();
