@@ -270,7 +270,7 @@
     transition: background .12s ease;
   }
   .street-back:hover{ background: rgba(20,16,10,.85); }
-  .street-back svg{ transform: rotate(180deg); }
+  .street-back-icon{ width:22px; height:22px; border-radius:50%; display:block; flex-shrink:0; }
   .street-label{
     position:absolute; top:18px; left:50%; transform:translateX(-50%); z-index:2;
     display:flex; align-items:center; gap:6px; line-height:1;
@@ -1131,8 +1131,7 @@
     heartFill: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20.5s-7.5-4.7-9.8-9.4C.6 7.6 2.2 4.3 5.4 3.6c2-.4 3.9.5 5 2.1a5.7 5.7 0 0 1 1.6 0c1.1-1.6 3-2.5 5-2.1 3.2.7 4.8 4 3.2 7.5C19.5 15.8 12 20.5 12 20.5z"/></svg>',
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
     comment: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>',
-    carrotAvatar: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f4efe4"/><g transform="translate(32,34) rotate(20)"><path d="M-4 -22c3-6 9-9 14-10 .5 4-2 9-8 12z" fill="#3f9142"/><path d="M6 -20c-2 -6 -8 -9 -13 -10 -1 4 1 9 7 12z" fill="#3f9142"/><path d="M-9 -10c1-2 4-3 6-1l10 10c5 5 3 10-1 14s-9 5-14 1l-10-10c-1-2-1-5 1-6z" fill="#ee7a12"/></g></svg>'),
-    brickAvatar: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#f4efe4"/><circle cx="24" cy="24" r="6" fill="#9aa3af"/><circle cx="40" cy="24" r="6" fill="#9aa3af"/><rect x="14" y="28" width="36" height="20" rx="4" fill="#aeb6c1"/></svg>')
+    brickAvatar: 'brick.jpg'
   };
 
   /* ================= views ================= */
@@ -1270,12 +1269,11 @@
     return wrap;
   }
 
-  // Fixed visual direction (left/straight/right) for each neighbour at the
-  // two 3-way junctions. Each neighbour always slants the same way no matter
-  // which spot you arrived from — going Back and then forward again (or
-  // approaching from any other direction) never re-labels these arrows.
-  // Degree-1/2 spots aren't listed: with only one way forward it's always
-  // rendered "straight".
+  // Fixed visual direction (left/right/behind) for specific neighbours. Each
+  // neighbour always slants the same way no matter which spot you arrived
+  // from — going Back and then forward again (or approaching from any other
+  // direction) never re-labels these arrows. Neighbours not listed here fall
+  // back to streetDir() below.
   const NODE_TURNS = {
     13: { 7: "right", 12: "left" },
     6: { 4: "left", 8: "right", 3: "behind" },
@@ -1283,12 +1281,30 @@
     18: { 16: "right" }
   };
 
+  // The photos face along the route, away from spot 1, so any neighbour
+  // closer to spot 1 is behind the camera. Everywhere else NODE_TURNS wins.
+  const STREET_DEPTH = { 1: 0 };
+  (function(){
+    const queue = [1];
+    while (queue.length){
+      const n = queue.shift();
+      STREET_GRAPH[n].forEach(function(m){
+        if (STREET_DEPTH[m] === undefined){ STREET_DEPTH[m] = STREET_DEPTH[n] + 1; queue.push(m); }
+      });
+    }
+  })();
+
+  function streetDir(from, to){
+    const fixed = NODE_TURNS[from] && NODE_TURNS[from][to];
+    if (fixed) return fixed;
+    return STREET_DEPTH[to] < STREET_DEPTH[from] ? "behind" : "straight";
+  }
+
   function StreetView(spotId, cameFrom, enterAnim){
     const photo = SPOT_PHOTOS[spotId];
     const neighbours = STREET_GRAPH[spotId] || [];
 
     const forwardIds = neighbours.filter(function(n){ return n !== cameFrom; });
-    const fixedTurns = NODE_TURNS[spotId];
 
     function animFor(dir){
       if (dir === "left") return "left";
@@ -1298,7 +1314,7 @@
     }
 
     const arrowsHtml = forwardIds.map(function(n){
-      const dir = fixedTurns ? (fixedTurns[n] || "straight") : "straight";
+      const dir = streetDir(spotId, n);
       return '<button type="button" class="street-arrow dir-' + dir + '" data-to="' + n + '" data-anim="' + animFor(dir) + '">' +
         ICONS.chevron + '<span>Spot ' + n + "</span>" +
       "</button>";
@@ -1309,7 +1325,7 @@
     const wrap = el(
       '<div class="street-view">' +
         '<button class="street-exit" id="streetExit">' + ICONS.back + " Exit to map</button>" +
-        (cameFrom != null ? '<button class="street-back" id="streetBack">' + ICONS.back + " Back</button>" : "") +
+        (cameFrom != null ? '<button class="street-back" id="streetBack"><img class="street-back-icon" src="gear-selector-icon.png" alt="" /> Back</button>' : "") +
         '<span class="street-label">' + ICONS.pin + " Spot " + spotId + "</span>" +
         '<img class="street-photo' + enterClass + '" src="' + photo + '" alt="Street view of spot ' + spotId + '" />' +
         '<div class="street-arrows">' + arrowsHtml + "</div>" +
@@ -1327,7 +1343,7 @@
 
     wrap.querySelector("#streetExit").addEventListener("click", function(){ render("map"); });
     const backBtn = wrap.querySelector("#streetBack");
-    if (backBtn) backBtn.addEventListener("click", function(){ goTo(cameFrom, spotId, "backward"); });
+    if (backBtn) backBtn.addEventListener("click", function(){ goTo(cameFrom, spotId, animFor(streetDir(spotId, cameFrom))); });
     wrap.querySelectorAll(".street-arrow").forEach(function(btn){
       btn.addEventListener("click", function(){
         const to = Number(btn.dataset.to);
@@ -2288,7 +2304,7 @@
           '<div class="field">' +
             '<label>Photo <span style="font-weight:600;color:var(--ink-faint);text-transform:none;">(optional, recommended)</span></label>' +
             '<div class="photo-picker">' +
-              '<img class="photo-preview" id="photoPreview" src="' + ICONS.carrotAvatar + '" alt="" />' +
+              '<img class="photo-preview" id="photoPreview" src="' + ICONS.brickAvatar + '" alt="" />' +
               '<button type="button" class="photo-btn" id="pickPhoto">' + "Choose photo</button>" +
               '<input type="file" accept="image/*" id="photoInput" class="visually-hidden" />' +
             "</div>" +
@@ -2413,7 +2429,7 @@
           const fresh = d.id === lastAddedId ? " fresh" : "";
           html += '<div class="row' + fresh + '">' +
             '<div class="rank ' + rankClass + '">' + rankMark + "</div>" +
-            '<img class="avatar" src="' + (d.photo || ICONS.carrotAvatar) + '" alt="" />' +
+            '<img class="avatar" src="' + (d.photo || ICONS.brickAvatar) + '" alt="" />' +
             '<div class="row-name"><div class="n">' + escapeHtml(d.name || "Anonymous Citizen") + "</div></div>" +
             '<div class="row-amount"><div class="a">' + fmtAmount(d.amount) + '<span class="unit"> Dollars</span></div></div>' +
           "</div>";
