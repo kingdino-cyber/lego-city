@@ -304,16 +304,20 @@
   .street-arrow.dir-right svg{ transform: rotate(32deg); }
   .street-arrow.dir-straight svg{ transform: rotate(0deg); }
   .street-arrow.dir-behind svg{ transform: rotate(180deg); }
+  .street-arrow.dir-behind-right{ align-self:flex-end; }
+  .street-arrow.dir-behind-right svg{ transform: rotate(148deg); }
 
   /* directional street-view transitions (forward/back zoom, left/right pan-rotate) */
   .street-photo.enter-forward{ animation: streetEnterForward .34s ease-out; }
   .street-photo.enter-backward{ animation: streetEnterBackward .34s ease-out; }
   .street-photo.enter-left{ animation: streetEnterLeft .34s ease-out; }
   .street-photo.enter-right{ animation: streetEnterRight .34s ease-out; }
+  .street-photo.enter-backright{ animation: streetEnterBackRight .34s ease-out; }
   .street-photo.exit-forward{ animation: streetExitForward .26s ease-in forwards; }
   .street-photo.exit-backward{ animation: streetExitBackward .26s ease-in forwards; }
   .street-photo.exit-left{ animation: streetExitLeft .26s ease-in forwards; }
   .street-photo.exit-right{ animation: streetExitRight .26s ease-in forwards; }
+  .street-photo.exit-backright{ animation: streetExitBackRight .26s ease-in forwards; }
   .street-transitioning .street-arrows,
   .street-transitioning .street-back,
   .street-transitioning .street-exit{ pointer-events:none; opacity:.35; transition: opacity .2s ease; }
@@ -325,6 +329,8 @@
   @keyframes streetExitBackward{ from{ opacity:1; transform:scale(1); } to{ opacity:0; transform:scale(.68); } }
   @keyframes streetExitLeft{ from{ opacity:1; transform:scale(1) rotate(0) translateX(0); } to{ opacity:0; transform:scale(1.18) rotate(-11deg) translateX(-9%); } }
   @keyframes streetExitRight{ from{ opacity:1; transform:scale(1) rotate(0) translateX(0); } to{ opacity:0; transform:scale(1.18) rotate(11deg) translateX(9%); } }
+  @keyframes streetEnterBackRight{ from{ opacity:0; transform:scale(1.28) rotate(-8deg) translateX(-9%); } to{ opacity:1; transform:scale(1) rotate(0) translateX(0); } }
+  @keyframes streetExitBackRight{ from{ opacity:1; transform:scale(1) rotate(0) translateX(0); } to{ opacity:0; transform:scale(.72) rotate(10deg) translateX(9%); } }
 
   .street-placeholder{
     position:absolute; inset:0; z-index:1;
@@ -1293,7 +1299,7 @@
   // Overrides used only when you arrive from a spot farther along the route
   // (i.e. you're walking back towards spot 1). They win over NODE_TURNS.
   const NODE_TURNS_BACK = {
-    13: { 7: "left" },
+    13: { 7: "behind-right" },
     6: { 4: "right", 8: "left" }
   };
 
@@ -1318,7 +1324,7 @@
     return STREET_DEPTH[to] < STREET_DEPTH[from] ? "behind" : "straight";
   }
 
-  const DIR_ORDER = { left: 0, straight: 1, behind: 1, right: 2 };
+  const DIR_ORDER = { left: 0, straight: 1, behind: 1, "behind-right": 1.5, right: 2 };
 
   function StreetView(spotId, cameFrom, enterAnim){
     const photo = SPOT_PHOTOS[spotId];
@@ -1330,6 +1336,7 @@
       if (dir === "left") return "left";
       if (dir === "right") return "right";
       if (dir === "behind") return "backward";
+      if (dir === "behind-right") return "backright";
       return "forward";
     }
 
@@ -2650,7 +2657,67 @@
     return wrap;
   }
 
+  /* ================= button sound effects (synthesised in the browser, no audio files) ================= */
+  const ButtonSounds = (function(){
+    let ctx = null;
+    function audio(){
+      if (!ctx){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+      }
+      if (ctx.state === "suspended") ctx.resume();
+      return ctx;
+    }
+    // One short blip: a tone gliding from `from` to `to` Hz over `dur` seconds.
+    function blip(c, when, from, to, dur, type, vol){
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(from, when);
+      osc.frequency.exponentialRampToValueAtTime(to, when + dur);
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.exponentialRampToValueAtTime(vol, when + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      osc.connect(gain);
+      gain.connect(c.destination);
+      osc.start(when);
+      osc.stop(when + dur + 0.02);
+    }
+    function play(kind){
+      const c = audio();
+      if (!c) return;
+      const t = c.currentTime;
+      if (kind === "primary"){
+        blip(c, t, 660, 700, 0.07, "sine", 0.16);
+        blip(c, t + 0.07, 990, 1040, 0.11, "sine", 0.16);
+      } else if (kind === "danger"){
+        blip(c, t, 240, 130, 0.13, "triangle", 0.18);
+      } else if (kind === "back"){
+        blip(c, t, 520, 300, 0.08, "triangle", 0.15);
+      } else {
+        blip(c, t, 700, 420, 0.06, "triangle", 0.15);
+      }
+    }
+    function kindFor(el){
+      if (el.matches(".btn-submit.danger, .menu-item.danger")) return "danger";
+      if (el.matches(".btn-submit, .donate-cta, .sign-cta, .like-btn, .blocktube-create")) return "primary";
+      if (el.matches(".back-btn, .street-back, .post-back, .charity-back, .street-exit")) return "back";
+      return "click";
+    }
+    function init(){
+      // Capture phase, so it still fires when a button's own handler stops propagation.
+      document.addEventListener("click", function(e){
+        const el = e.target.closest && e.target.closest("button, [role='button']");
+        if (!el || el.disabled) return;
+        play(kindFor(el));
+      }, true);
+    }
+    return { init: init };
+  })();
+
   /* ================= boot ================= */
+  ButtonSounds.init();
   DonationsStore.init();
   PostsStore.init();
   CommentsStore.init();
