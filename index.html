@@ -395,6 +395,7 @@
   .tile-dots svg{ width:16px; height:16px; }
   .tile:hover .tile-dots, .tile:focus-within .tile-dots{ opacity:1; }
   @media (hover:none){ .tile-dots{ opacity:.85; } }
+  .post-tile.is-finished .tile-dots{ display:none; }
   .tile-content{ position:relative; z-index:1; margin-top:auto; width:100%; }
   .tile-meta{ font-family:'Nunito',sans-serif; font-weight:700; font-size:.72rem; opacity:.85; text-transform:uppercase; letter-spacing:.04em; display:block; }
   .tile-title{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.2; }
@@ -1289,6 +1290,13 @@
     18: { 16: "right" }
   };
 
+  // Overrides used only when you arrive from a spot farther along the route
+  // (i.e. you're walking back towards spot 1). They win over NODE_TURNS.
+  const NODE_TURNS_BACK = {
+    13: { 7: "left" },
+    6: { 4: "right", 8: "left" }
+  };
+
   // The photos face along the route, away from spot 1, so any neighbour
   // closer to spot 1 is behind the camera. Everywhere else NODE_TURNS wins.
   const STREET_DEPTH = { 1: 0 };
@@ -1302,11 +1310,15 @@
     }
   })();
 
-  function streetDir(from, to){
-    const fixed = NODE_TURNS[from] && NODE_TURNS[from][to];
+  function streetDir(from, to, cameFrom){
+    const walkingBack = cameFrom != null && STREET_DEPTH[cameFrom] > STREET_DEPTH[from];
+    const fixed = (walkingBack && NODE_TURNS_BACK[from] && NODE_TURNS_BACK[from][to]) ||
+      (NODE_TURNS[from] && NODE_TURNS[from][to]);
     if (fixed) return fixed;
     return STREET_DEPTH[to] < STREET_DEPTH[from] ? "behind" : "straight";
   }
+
+  const DIR_ORDER = { left: 0, straight: 1, behind: 1, right: 2 };
 
   function StreetView(spotId, cameFrom, enterAnim){
     const photo = SPOT_PHOTOS[spotId];
@@ -1321,12 +1333,14 @@
       return "forward";
     }
 
-    const arrowsHtml = forwardIds.map(function(n){
-      const dir = streetDir(spotId, n);
-      return '<button type="button" class="street-arrow dir-' + dir + '" data-to="' + n + '" data-anim="' + animFor(dir) + '">' +
-        ICONS.chevron + '<span>Spot ' + n + "</span>" +
-      "</button>";
-    }).join("");
+    const arrowsHtml = forwardIds
+      .map(function(n){ return { n: n, dir: streetDir(spotId, n, cameFrom) }; })
+      .sort(function(a, b){ return DIR_ORDER[a.dir] - DIR_ORDER[b.dir]; })
+      .map(function(a){
+        return '<button type="button" class="street-arrow dir-' + a.dir + '" data-to="' + a.n + '" data-anim="' + animFor(a.dir) + '">' +
+          ICONS.chevron + '<span>Spot ' + a.n + "</span>" +
+        "</button>";
+      }).join("");
 
     const enterClass = enterAnim ? (" enter-" + enterAnim) : "";
 
@@ -1503,6 +1517,86 @@
     });
   }
 
+  /* ================= video preparation: convert to MP4 and shrink under the upload limit ================= */
+  const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+  // Aim below the cap because encoders don't hit a bitrate exactly.
+  const TARGET_VIDEO_BYTES = 44 * 1024 * 1024;
+  const MEDIABUNNY_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.58.1/dist/bundles/mediabunny.min.mjs";
+  let mediabunnyPromise = null;
+
+  function loadMediabunny(){
+    if (!mediabunnyPromise){
+      mediabunnyPromise = import(MEDIABUNNY_URL).catch(function(e){ mediabunnyPromise = null; throw e; });
+    }
+    return mediabunnyPromise;
+  }
+  function friendlyError(message){
+    const e = new Error(message);
+    e.friendly = true;
+    return e;
+  }
+  function isMp4File(file){ return file.type === "video/mp4" || /\.mp4$/i.test(file.name); }
+  function videoNeedsPrep(file){ return !isMp4File(file) || file.size > MAX_VIDEO_BYTES; }
+
+  // Small MOV/etc. files are just repackaged as MP4 (no quality loss); files over the
+  // limit are re-encoded with a bitrate worked out from their length so they fit.
+  async function prepareVideo(file, onProgress, control){
+    if (!videoNeedsPrep(file)) return file;
+    if (typeof VideoEncoder === "undefined" || typeof VideoDecoder === "undefined"){
+      throw friendlyError("This browser can’t convert videos. Use Chrome or Edge, or turn it into an MP4 under 50 MB first.");
+    }
+    let MB;
+    try{ MB = await loadMediabunny(); }
+    catch(e){ throw friendlyError("Couldn’t load the video converter. Check your internet connection and try again."); }
+    const tooBig = file.size > MAX_VIDEO_BYTES;
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "video";
+    let budgetScale = 1;
+
+    for (let attempt = 1; attempt <= 3; attempt++){
+      const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
+      try{
+        const videoOpts = { codec: "avc" };
+        if (tooBig){
+          const track = await input.getPrimaryVideoTrack();
+          if (!track) throw friendlyError("There’s no video in that file.");
+          const duration = await input.computeDuration();
+          let audioBps = 0;
+          const audioTrack = await input.getPrimaryAudioTrack();
+          if (audioTrack){
+            try{ audioBps = (await audioTrack.computePacketStats(200)).averageBitrate || 128000; }
+            catch(e){ audioBps = 128000; }
+          }
+          const videoBps = Math.max(120000, Math.floor((TARGET_VIDEO_BYTES * 8 * budgetScale) / duration - audioBps));
+          const maxHeight = videoBps >= 3000000 ? 1080 : videoBps >= 1500000 ? 720 : videoBps >= 700000 ? 480 : 360;
+          videoOpts.bitrate = videoBps;
+          videoOpts.forceTranscode = true;
+          if (track.displayHeight > maxHeight) videoOpts.height = maxHeight;
+        }
+        const output = new MB.Output({ format: new MB.Mp4OutputFormat(), target: new MB.BufferTarget() });
+        const conversion = await MB.Conversion.init({ input: input, output: output, video: videoOpts });
+        if (!conversion.isValid){
+          throw friendlyError("This browser can’t read that video’s format. Try turning it into an MP4 first.");
+        }
+        control.cancel = function(){ conversion.cancel(); };
+        conversion.onProgress = function(p){ onProgress(p, attempt); };
+        await conversion.execute();
+
+        const size = output.target.buffer.byteLength;
+        if (size <= MAX_VIDEO_BYTES){
+          return new File([output.target.buffer], baseName + ".mp4", { type: "video/mp4" });
+        }
+        budgetScale *= (TARGET_VIDEO_BYTES / size) * 0.9;
+      } catch(e){
+        if (e.friendly || e instanceof MB.ConversionCanceledError) throw e;
+        console.error(e);
+        throw friendlyError("This browser couldn’t convert that video. Try Chrome or Edge, or turn it into an MP4 under 50 MB first.");
+      } finally {
+        input.dispose();
+      }
+    }
+    throw friendlyError("Couldn’t get that video under 50 MB. Try trimming it shorter.");
+  }
+
   function openVideoUploadModal(){
     let videoFile = null;
     let thumbDataUrl = null;
@@ -1532,11 +1626,12 @@
             "</div>" +
           "</div>" +
           '<div class="field">' +
-            "<label>Video file (MP4)</label>" +
-            '<button type="button" class="photo-btn" id="pickVideoFile">Choose MP4</button>' +
+            "<label>Video file (MP4, MOV, …)</label>" +
+            '<button type="button" class="photo-btn" id="pickVideoFile">Choose video</button>' +
             '<div class="hint" id="vidFileName">No file chosen</div>' +
-            '<input type="file" accept="video/mp4" id="vVideoInput" class="visually-hidden" />' +
+            '<input type="file" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" id="vVideoInput" class="visually-hidden" />' +
           "</div>" +
+          '<div class="hint" id="vidStatus"></div>' +
           '<div class="error-msg" id="vidError"></div>' +
           '<div class="modal-actions">' +
             '<button class="btn-ghost" id="vidCancel">Not now</button>' +
@@ -1547,8 +1642,15 @@
     );
     document.body.appendChild(backdrop);
 
-    function close(){ backdrop.remove(); }
-    backdrop.addEventListener("click", function(e){ if (e.target === backdrop) close(); });
+    let busy = false;
+    let canceled = false;
+    const convertControl = { cancel: null };
+    function close(){
+      canceled = true;
+      if (convertControl.cancel) convertControl.cancel();
+      backdrop.remove();
+    }
+    backdrop.addEventListener("click", function(e){ if (e.target === backdrop && !busy) close(); });
     backdrop.querySelector("#vidCancel").addEventListener("click", close);
 
     backdrop.querySelector("#pickVCreatorPhoto").addEventListener("click", function(){ backdrop.querySelector("#vCreatorPhotoInput").click(); });
@@ -1561,7 +1663,12 @@
     backdrop.querySelector("#vVideoInput").addEventListener("change", function(e){
       const file = e.target.files && e.target.files[0];
       videoFile = file || null;
-      backdrop.querySelector("#vidFileName").textContent = file ? file.name : "No file chosen";
+      let label = "No file chosen";
+      if (file){
+        label = file.name + " · " + (file.size / (1024 * 1024)).toFixed(1) + " MB";
+        if (videoNeedsPrep(file)) label += file.size > MAX_VIDEO_BYTES ? " — will be compressed automatically" : " — will be converted to MP4";
+      }
+      backdrop.querySelector("#vidFileName").textContent = label;
     });
 
     backdrop.querySelector("#vidSubmit").addEventListener("click", async function(){
@@ -1571,17 +1678,27 @@
       const errorEl = backdrop.querySelector("#vidError");
       if (!titleVal){ errorEl.textContent = "Give it a title."; return; }
       if (!creatorVal){ errorEl.textContent = "Tell us who made it."; return; }
-      if (!videoFile){ errorEl.textContent = "Choose an MP4 to upload."; return; }
-      const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
-      if (videoFile.size > MAX_VIDEO_BYTES){
-        errorEl.textContent = "That file is " + (videoFile.size / (1024*1024)).toFixed(0) + "MB — videos must be under 50MB. Try compressing it first.";
-        return;
-      }
+      if (!videoFile){ errorEl.textContent = "Choose a video to upload."; return; }
       errorEl.textContent = "";
       const btn = backdrop.querySelector("#vidSubmit");
-      btn.disabled = true; btn.textContent = "Uploading…";
+      const statusEl = backdrop.querySelector("#vidStatus");
+      btn.disabled = true; busy = true;
       try{
-        const uploaded = await AssetStore.upload(videoFile);
+        let fileToUpload = videoFile;
+        if (videoNeedsPrep(videoFile)){
+          const shrinking = videoFile.size > MAX_VIDEO_BYTES;
+          btn.textContent = (shrinking ? "Compressing…" : "Converting…");
+          statusEl.textContent = (shrinking ? "Compressing your video to fit under 50 MB" : "Converting your video to MP4") + " — keep this tab open.";
+          fileToUpload = await prepareVideo(videoFile, function(p, attempt){
+            if (canceled) return;
+            btn.textContent = (shrinking ? "Compressing " : "Converting ") + Math.round(p * 100) + "%" + (attempt > 1 ? " (pass " + attempt + ")" : "");
+          }, convertControl);
+          convertControl.cancel = null;
+          statusEl.textContent = "";
+        }
+        if (canceled) return;
+        btn.textContent = "Uploading…";
+        const uploaded = await AssetStore.upload(fileToUpload);
         lastAddedVideoId = await VideosStore.add({
           title: titleVal.slice(0, 60),
           creatorName: creatorVal.slice(0, 40),
@@ -1594,9 +1711,13 @@
         });
         close();
       }catch(err){
+        if (canceled) return;
         console.error(err);
-        errorEl.textContent = "That didn’t go through — give it another try.";
+        convertControl.cancel = null;
+        statusEl.textContent = "";
+        errorEl.textContent = err && err.friendly ? err.message : "That didn’t go through — give it another try.";
         btn.disabled = false; btn.textContent = "Publish";
+        busy = false;
       }
     });
   }
@@ -1709,19 +1830,39 @@
         "</div>" +
         '<div class="grid" id="postGrid">' +
           '<button class="tile add-tile" id="addPost" style="--tile-accent:' + kind.accent + '">' + ICONS.plus + "<span>" + kind.addLabel + "</span></button>" +
-          (type === "project" ? tileMarkup({ id: "toCarrot", photo: "carrot-brick.jpeg", accent: kind.accent, icon: kind.icon, title: "Carrots Charity" }) : "") +
+          (type === "project" ? tileMarkup({ id: "toCarrot", photo: "carrot-brick.jpeg", accent: kind.accent, icon: kind.icon, title: "Carrots Charity", editable: true }) : "") +
         "</div>" +
       "</div>"
     );
     wrap.querySelector("#toHome").addEventListener("click", function(){ render("home"); });
     wrap.querySelector("#addPost").addEventListener("click", function(){ openPostModal(type); });
     const carrotTile = wrap.querySelector("#toCarrot");
-    if (carrotTile) carrotTile.addEventListener("click", function(){ render("carrot"); });
+    if (carrotTile){
+      carrotTile.addEventListener("click", function(){ render("carrot"); });
+      const carrotDots = carrotTile.querySelector(".tile-dots");
+      carrotDots.addEventListener("click", function(e){ e.stopPropagation(); openCarrotMenu(); });
+      carrotDots.addEventListener("keydown", function(e){
+        if (e.key === "Enter" || e.key === " "){ e.preventDefault(); e.stopPropagation(); openCarrotMenu(); }
+      });
+    }
 
     if (unsubscribePosts) unsubscribePosts();
     unsubscribePosts = PostsStore.subscribe(function(posts){
       const grid = wrap.querySelector("#postGrid");
       if (!grid) return;
+      if (carrotTile){
+        const done = isCarrotFinished(posts);
+        carrotTile.classList.toggle("is-finished", done);
+        let meta = carrotTile.querySelector(".tile-meta");
+        if (done && !meta){
+          meta = document.createElement("span");
+          meta.className = "tile-meta";
+          meta.textContent = "Finished";
+          carrotTile.querySelector(".tile-content").appendChild(meta);
+        } else if (!done && meta){
+          meta.remove();
+        }
+      }
       const existing = grid.querySelectorAll(".post-tile:not(#toCarrot)");
       existing.forEach(function(t){ t.remove(); });
       posts.filter(function(p){ return p.type === type; }).forEach(function(p){
@@ -1783,6 +1924,31 @@
       );
     } });
     openMenu(actions);
+  }
+
+  // Carrots Charity is a built-in page rather than a posts row, so its
+  // "finished" flag is stored as a hidden row (type "setting") that the
+  // article and project lists never show.
+  function isCarrotFinished(posts){
+    return posts.some(function(p){ return p.type === "setting" && p.title === "carrot-charity" && p.finished; });
+  }
+
+  function openCarrotMenu(){
+    openMenu([{ label: "Finish", onClick: function(){
+      openConfirm(
+        "This project will stop collecting donations.",
+        "Finish",
+        async function(){
+          try{
+            await PostsStore.add({ type: "setting", title: "carrot-charity", finished: true, createdAt: new Date().toISOString() });
+            toast("Project finished");
+          }catch(err){
+            console.error(err);
+            toast("Couldn’t finish this project — try again.");
+          }
+        }
+      );
+    } }]);
   }
 
   function projectKindOf(post){
@@ -2297,11 +2463,13 @@
             '<div class="charity-meta">' +
               '<span class="charity-eyebrow">' + ICONS.carrotMini.replace('viewBox', 'width="16" height="16" style="vertical-align:-3px" viewBox') + " Wiping Greediness</span>" +
               '<span class="charity-date">' + fmtDate(CARROT_FOUNDED) + "</span>" +
+              '<span class="post-finished" id="carrotFinished" style="display:none">Finished</span>' +
             "</div>" +
             "<h2>Carrot’s Charity</h2>" +
             "<p>In the shops, Booster girl’s shop has shelf after shelf of shine — gold plates, priceless cups, more shiny bricks than one shop could ever need. Carrot thinks that’s a little much while half of Lego City is short on money and needs help.</p>" +
             "<p>So Carrot’s calling it: every last stud, cup, and trinket off those shelves gets counted up and turned into a donation for citizens who need it most. Chip in a few million dollars and your name goes up on the wall of honour as well as contributing to a better place.</p>" +
             '<button class="donate-cta" id="openDonate">Donate</button>' +
+            '<div class="finished-note" id="carrotFinishedNote" style="display:none">This project has finished and is no longer accepting donations.</div>' +
           "</div>" +
         "</div>" +
         '<div style="text-align:center;margin-top:16px;">' +
@@ -2309,10 +2477,19 @@
         "</div>" +
       "</div>"
     );
-    const carrotCtx = { projectId: "carrot", title: "Carrot’s Charity", kicker: "Wiping Greediness", back: { view: "carrot" } };
+    const carrotCtx = { projectId: "carrot", title: "Carrot’s Charity", kicker: "Wiping Greediness", back: { view: "carrot" }, finished: false };
     wrap.querySelector("#toActions").addEventListener("click", function(){ render("projects"); });
     wrap.querySelector("#toLeaderboard").addEventListener("click", function(){ render("leaderboard", carrotCtx); });
     wrap.querySelector("#openDonate").addEventListener("click", function(){ openDonateModal(carrotCtx); });
+
+    if (unsubscribePosts) unsubscribePosts();
+    unsubscribePosts = PostsStore.subscribe(function(posts){
+      const done = isCarrotFinished(posts);
+      carrotCtx.finished = done;
+      wrap.querySelector("#openDonate").style.display = done ? "none" : "";
+      wrap.querySelector("#carrotFinished").style.display = done ? "" : "none";
+      wrap.querySelector("#carrotFinishedNote").style.display = done ? "" : "none";
+    });
     return wrap;
   }
 
