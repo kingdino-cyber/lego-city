@@ -402,6 +402,16 @@
   .tile:hover .tile-dots, .tile:focus-within .tile-dots{ opacity:1; }
   @media (hover:none){ .tile-dots{ opacity:.85; } }
   .post-tile.is-finished .tile-dots{ display:none; }
+  /* finished projects: greyed out (darker on hover) with a big FINISHED stamp, still clickable */
+  .tile.finished-tile{ filter: grayscale(1) brightness(.9); }
+  .tile.finished-tile:hover{ filter: grayscale(1) brightness(.55); }
+  .tile.finished-tile::after{
+    content:"FINISHED"; position:absolute; top:50%; left:50%; z-index:2; pointer-events:none;
+    transform: translate(-50%,-50%) rotate(-18deg);
+    padding:.08em .35em; border:.12em solid rgba(255,255,255,.8); border-radius:.2em;
+    font-family:'Baloo 2',sans-serif; font-weight:800; font-size: clamp(1.1rem, 5.5vw, 2.6rem); letter-spacing:.06em;
+    color: rgba(255,255,255,.8); white-space:nowrap; text-shadow: 0 2px 6px rgba(0,0,0,.5);
+  }
   .tile-content{ position:relative; z-index:1; margin-top:auto; width:100%; }
   .tile-meta{ font-family:'Nunito',sans-serif; font-weight:700; font-size:.72rem; opacity:.85; text-transform:uppercase; letter-spacing:.04em; display:block; }
   .tile-title{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.2; }
@@ -448,6 +458,14 @@
   .post-finished{
     font-family:'Baloo 2',sans-serif; font-weight:700; font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
     padding: 4px 10px; border-radius:999px; background:#57534b; color:#f4efe4;
+  }
+  .post-inline-img{ display:block; width:100%; height:auto; border-radius:14px; margin: 4px 0 14px; }
+  .story-images{ display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; }
+  .story-image{ position:relative; width:64px; height:64px; }
+  .story-image img{ width:100%; height:100%; object-fit:cover; border-radius:10px; border:2px solid var(--line); display:block; }
+  .story-image-remove{
+    position:absolute; top:-7px; right:-7px; width:22px; height:22px; padding:0; border:none; border-radius:50%;
+    background: var(--brick-red); color:#fff; font-weight:800; font-size:.9rem; line-height:1; cursor:pointer;
   }
   .finished-note{ margin: 4px 0 12px; padding: 12px 14px; border-radius:12px; background: var(--bg-soft); color: var(--ink-soft); font-weight:700; font-size:.9rem; text-align:center; }
   .post-body h2{ font-size:1.5rem; margin-bottom:12px; }
@@ -849,9 +867,9 @@
   }
   .gate[hidden]{ display:none; }
   .gate input{
-    width:min(320px, 100%); padding:16px 18px; border-radius:14px;
+    width:min(320px, 100%); padding:20px 18px; border-radius:14px;
     border:2px solid #3a3a3a; background:#111; color:#fff;
-    font-family:'Baloo 2',sans-serif; font-weight:700; font-size:1.1rem; text-align:center;
+    font-family:'Baloo 2',sans-serif; font-weight:700; font-size:1.8rem; letter-spacing:.04em; text-align:center;
   }
   .gate input::placeholder{ color:#8a8a8a; }
   .gate input:focus{ outline:none; border-color:#8a8a8a; }
@@ -861,7 +879,7 @@
 
 <div class="gate" id="gate" hidden>
   <form id="gateForm" autocomplete="off">
-    <input id="gateInput" type="password" placeholder="Password" autocomplete="off" enterkeyhint="go" aria-label="Password" />
+    <input id="gateInput" type="text" placeholder="Password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Password" />
   </form>
 </div>
 
@@ -1049,7 +1067,12 @@
       localBlobs[id] = url;
       return { id: id, url: url };
     }
-    return { init: init, upload: upload };
+    function urlFor(id){
+      if (localBlobs[id]) return localBlobs[id];
+      if (supa) return supa.storage.from("videos").getPublicUrl(id).data.publicUrl;
+      return "";
+    }
+    return { init: init, upload: upload, urlFor: urlFor };
   })();
 
   /* ================= helpers ================= */
@@ -1058,6 +1081,51 @@
     t.innerHTML = html.trim();
     return t.content.firstElementChild;
   }
+  // An article's text can hold pictures: a line like [img:<file id>] shows that image right there.
+  const IMG_TOKEN_SPLIT = /(\[img:[A-Za-z0-9._-]+\])/;
+  const IMG_TOKEN_ONE = /^\[img:([A-Za-z0-9._-]+)\]$/;
+  function storyHtml(body){
+    let html = "";
+    String(body || "").split(/\n+/).forEach(function(line){
+      line.split(IMG_TOKEN_SPLIT).forEach(function(part){
+        const m = IMG_TOKEN_ONE.exec(part);
+        if (m) html += '<img class="post-inline-img" src="' + escapeHtml(AssetStore.urlFor(m[1])) + '" alt="" loading="lazy" />';
+        else if (part.trim()) html += "<p>" + escapeHtml(part) + "</p>";
+      });
+    });
+    return html;
+  }
+  function storyImageIds(body){
+    const ids = [];
+    String(body || "").replace(/\[img:([A-Za-z0-9._-]+)\]/g, function(_, id){ if (ids.indexOf(id) < 0) ids.push(id); return _; });
+    return ids;
+  }
+  // Scales a picked photo down (long side 1280px) and re-saves it as a JPEG so uploads stay small.
+  function shrinkImage(file){
+    return new Promise(function(resolve, reject){
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = function(){
+        const scale = Math.min(1, 1280 / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(function(blob){
+          if (blob) resolve(new File([blob], "story.jpg", { type: "image/jpeg" }));
+          else reject(new Error("Couldn’t read that image."));
+        }, "image/jpeg", 0.82);
+      };
+      img.onerror = function(){ URL.revokeObjectURL(url); reject(new Error("That file isn’t an image.")); };
+      img.src = url;
+    });
+  }
+
   function fmtAmount(m){
     const n = Number(m) || 0;
     if (n >= 1000) return (n/1000).toFixed(2).replace(/\.00$/,"") + "B";
@@ -1311,6 +1379,7 @@
   // back to streetDir() below.
   const NODE_TURNS = {
     13: { 7: "right", 12: "left" },
+    12: { 11: "left" },
     6: { 4: "left", 8: "right", 3: "behind" },
     3: { 2: "behind" },
     18: { 16: "right" }
@@ -1320,6 +1389,7 @@
   // (i.e. you're walking back towards spot 1). They win over NODE_TURNS.
   const NODE_TURNS_BACK = {
     13: { 7: "behind-right" },
+    9: { 11: "behind-right" },
     6: { 4: "right", 8: "left" }
   };
 
@@ -1880,6 +1950,7 @@
       if (carrotTile){
         const done = isCarrotFinished(posts);
         carrotTile.classList.toggle("is-finished", done);
+        carrotTile.classList.toggle("finished-tile", done);
         let meta = carrotTile.querySelector(".tile-meta");
         if (done && !meta){
           meta = document.createElement("span");
@@ -1901,6 +1972,7 @@
           meta: fmtDate(p.createdAt) + (p.finished ? " · Finished" : ""),
           editable: true
         }));
+        if (p.finished) tile.classList.add("finished-tile");
         tile.addEventListener("click", function(){ render("post", p); });
         const dotsBtn = tile.querySelector(".tile-dots");
         if (dotsBtn){
@@ -1989,8 +2061,7 @@
     const finished = !!post.finished;
     const donationColor = (pKind === "donation" && post.donationColor) ? post.donationColor : "#f4b400";
     const donationTextColor = textColorFor(donationColor);
-    const bodyParagraphs = String(post.body || "").split(/\n+/).filter(Boolean)
-      .map(function(p){ return "<p>" + escapeHtml(p) + "</p>"; }).join("");
+    const bodyParagraphs = storyHtml(post.body);
     const wrap = el(
       '<div class="view">' +
         '<div class="post">' +
@@ -2296,6 +2367,8 @@
   function openPostModal(type, existing){
     const isEdit = !!existing;
     const kind = POST_KIND[type];
+    // Articles get extra room because pictures take up a short [img:…] line in the text.
+    const BODY_MAX = type === "article" ? 2000 : 1200;
     let photoDataUrl = existing ? (existing.photo || null) : null;
     let selectedKind = isEdit ? (projectKindOf(existing) || "none") : "none";
     const bodyLabel = type === "project" ? "What’s it about?" : "Story";
@@ -2313,8 +2386,16 @@
           "</div>" +
           '<div class="field">' +
             '<label for="pBody">' + bodyLabel + "</label>" +
-            '<textarea id="pBody" maxlength="1200" placeholder="' + bodyPlaceholder + '">' + (isEdit ? escapeHtml(existing.body) : "") + "</textarea>" +
+            '<textarea id="pBody" maxlength="' + BODY_MAX + '" placeholder="' + bodyPlaceholder + '">' + (isEdit ? escapeHtml(existing.body) : "") + "</textarea>" +
           "</div>" +
+          (type === "article"
+            ? '<div class="field">' +
+                '<button type="button" class="photo-btn" id="addStoryImage" style="width:100%;">+ Add an image inside the story</button>' +
+                '<div class="hint">It goes where your cursor is. Move its [img:…] line to change where it shows.</div>' +
+                '<div class="story-images" id="storyImageList"></div>' +
+                '<input type="file" accept="image/*" id="storyImageInput" class="visually-hidden" multiple />' +
+              "</div>"
+            : "") +
           (type === "project"
             ? '<div class="field">' +
                 "<label>Project type</label>" +
@@ -2389,6 +2470,60 @@
       reader.readAsDataURL(file);
     });
 
+    if (type === "article"){
+      const bodyEl = backdrop.querySelector("#pBody");
+      const addBtn = backdrop.querySelector("#addStoryImage");
+      const imgInput = backdrop.querySelector("#storyImageInput");
+      const imgList = backdrop.querySelector("#storyImageList");
+      const submitBtn = backdrop.querySelector("#pSubmit");
+      const errorEl = backdrop.querySelector("#pError");
+      let cursorTouched = false;
+
+      // The thumbnails are always rebuilt from the [img:…] lines in the text, so they can't drift out of sync.
+      function renderStoryImages(){
+        imgList.innerHTML = storyImageIds(bodyEl.value).map(function(id){
+          return '<div class="story-image"><img src="' + escapeHtml(AssetStore.urlFor(id)) + '" alt="" />' +
+            '<button type="button" class="story-image-remove" data-id="' + escapeHtml(id) + '" aria-label="Remove image">×</button></div>';
+        }).join("");
+      }
+      function insertAtCursor(text){
+        const at = cursorTouched ? bodyEl.selectionStart : bodyEl.value.length;
+        const to = cursorTouched ? bodyEl.selectionEnd : at;
+        bodyEl.value = bodyEl.value.slice(0, at) + text + bodyEl.value.slice(to);
+        bodyEl.selectionStart = bodyEl.selectionEnd = at + text.length;
+      }
+      bodyEl.addEventListener("focus", function(){ cursorTouched = true; });
+      bodyEl.addEventListener("input", renderStoryImages);
+      imgList.addEventListener("click", function(e){
+        const rm = e.target.closest(".story-image-remove");
+        if (!rm) return;
+        bodyEl.value = bodyEl.value.split("[img:" + rm.dataset.id + "]").join("").replace(/\n{3,}/g, "\n\n");
+        renderStoryImages();
+      });
+      addBtn.addEventListener("click", function(){ imgInput.click(); });
+      imgInput.addEventListener("change", async function(){
+        const files = Array.from(imgInput.files || []);
+        imgInput.value = "";
+        if (!files.length) return;
+        errorEl.textContent = "";
+        addBtn.disabled = true; submitBtn.disabled = true;
+        addBtn.textContent = "Adding…";
+        try{
+          for (const file of files){
+            const uploaded = await AssetStore.upload(await shrinkImage(file));
+            insertAtCursor("\n[img:" + uploaded.id + "]\n");
+          }
+        }catch(err){
+          console.error(err);
+          errorEl.textContent = "Couldn’t add that image — try another one.";
+        }
+        renderStoryImages();
+        addBtn.disabled = false; submitBtn.disabled = false;
+        addBtn.textContent = "+ Add an image inside the story";
+      });
+      renderStoryImages();
+    }
+
     let pollOptionsList = null;
     let selectedColor = (isEdit && existing.donationColor) ? existing.donationColor : DONATION_COLORS[0];
     if (type === "project"){
@@ -2441,6 +2576,7 @@
       const errorEl = backdrop.querySelector("#pError");
       if (!titleVal){ errorEl.textContent = "Give it a title."; return; }
       if (!bodyVal){ errorEl.textContent = "Write a little more about it."; return; }
+      if (bodyVal.length > BODY_MAX){ errorEl.textContent = "That’s a little too long — trim the text a bit."; return; }
       let pollOptions = null;
       if (type === "project" && selectedKind === "poll"){
         pollOptions = Array.from(pollOptionsList.querySelectorAll("input")).map(function(i){ return i.value.trim(); }).filter(Boolean);
@@ -2453,7 +2589,7 @@
         const entry = {
           type: type,
           title: titleVal.slice(0,60),
-          body: bodyVal.slice(0,1200),
+          body: bodyVal,
           photo: photoDataUrl
         };
         if (type === "project"){
@@ -2689,34 +2825,53 @@
       if (ctx.state === "suspended") ctx.resume();
       return ctx;
     }
-    // One short blip: a tone gliding from `from` to `to` Hz over `dur` seconds.
+    // One short, warm blip: a tone gliding from `from` to `to` Hz, with a quiet
+    // sub-octave layer under it for body and a lowpass filter to take the edge off.
     function blip(c, when, from, to, dur, type, vol){
+      const filt = c.createBiquadFilter();
+      filt.type = "lowpass";
+      filt.frequency.value = 1400;
+      filt.connect(c.destination);
+
       const osc = c.createOscillator();
       const gain = c.createGain();
       osc.type = type;
       osc.frequency.setValueAtTime(from, when);
       osc.frequency.exponentialRampToValueAtTime(to, when + dur);
       gain.gain.setValueAtTime(0.0001, when);
-      gain.gain.exponentialRampToValueAtTime(vol, when + 0.008);
+      gain.gain.exponentialRampToValueAtTime(vol, when + 0.012);
       gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
       osc.connect(gain);
-      gain.connect(c.destination);
+      gain.connect(filt);
       osc.start(when);
-      osc.stop(when + dur + 0.02);
+      osc.stop(when + dur + 0.03);
+
+      const sub = c.createOscillator();
+      const subGain = c.createGain();
+      sub.type = "sine";
+      sub.frequency.setValueAtTime(from / 2, when);
+      sub.frequency.exponentialRampToValueAtTime(to / 2, when + dur);
+      subGain.gain.setValueAtTime(0.0001, when);
+      subGain.gain.exponentialRampToValueAtTime(vol * 0.5, when + 0.012);
+      subGain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      sub.connect(subGain);
+      subGain.connect(filt);
+      sub.start(when);
+      sub.stop(when + dur + 0.03);
     }
     function play(kind){
       const c = audio();
       if (!c) return;
       const t = c.currentTime;
       if (kind === "primary"){
-        blip(c, t, 660, 700, 0.07, "sine", 0.16);
-        blip(c, t + 0.07, 990, 1040, 0.11, "sine", 0.16);
+        blip(c, t, 330, 350, 0.09, "sine", 0.16);
+        blip(c, t + 0.09, 440, 465, 0.13, "sine", 0.16);
       } else if (kind === "danger"){
-        blip(c, t, 240, 130, 0.13, "triangle", 0.18);
+        blip(c, t, 160, 90, 0.15, "triangle", 0.18);
       } else if (kind === "back"){
-        blip(c, t, 520, 300, 0.08, "triangle", 0.15);
+        blip(c, t, 280, 170, 0.1, "triangle", 0.15);
       } else {
-        blip(c, t, 700, 420, 0.06, "triangle", 0.15);
+        blip(c, t, 340, 220, 0.07, "triangle", 0.15);
       }
     }
     function kindFor(el){
