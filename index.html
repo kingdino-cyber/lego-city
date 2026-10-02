@@ -2956,6 +2956,20 @@
     return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
   }
 
+  // Said out loud after a correct login. It reads back what was typed (which has already been
+  // checked against the hash), so the passcode itself never appears in this file.
+  let loginUtterance = null;
+  function speakLogin(typed){
+    try{
+      if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
+      const digits = typed.split("").join(" ");
+      loginUtterance = new SpeechSynthesisUtterance("Logging in. Remember that your passcode is " + digits + ".");
+      loginUtterance.rate = 0.95;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(loginUtterance);
+    }catch(err){ console.error(err); }
+  }
+
   function startApp(){
     ButtonSounds.init();
     DonationsStore.init();
@@ -2982,6 +2996,7 @@
       finished = true;
       if ((await sha256Hex("lego-city:" + input.value)) === PASSWORD_HASH){
         try{ sessionStorage.setItem(UNLOCK_KEY, "1"); }catch(err){}
+        speakLogin(input.value);
         gate.hidden = true;
         startApp();
       } else {
