@@ -755,6 +755,16 @@
   .row-amount{ text-align:right; flex-shrink:0; }
   .row-amount .a{ font-weight:700; font-size:1.02rem; color: var(--brick-green); }
   .row-amount .a .unit{ font-size:.72em; color: var(--ink-faint); font-family:'Nunito',sans-serif; font-weight:800; margin-left:2px; }
+  .row-dots{
+    width:28px; height:28px; border-radius:50%; padding:0; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; border:none; cursor:pointer;
+    background:transparent; color: var(--ink-faint); opacity:0;
+    transition: opacity .15s ease, background .15s ease;
+  }
+  .row-dots svg{ width:16px; height:16px; }
+  .row-dots:hover{ background: var(--bg-soft); }
+  .row:hover .row-dots, .row:focus-within .row-dots{ opacity:1; }
+  @media (hover:none){ .row-dots{ opacity:.7; } }
 
   .lb-actions{ display:flex; gap:10px; margin-top: 26px; }
   .lb-actions .brick{ margin-top:0; }
@@ -2824,11 +2834,30 @@
       setTimeout(function(){ openDonateModal(ctx); }, 20);
     });
 
-    if (unsubscribeLb) unsubscribeLb();
-    unsubscribeLb = DonationsStore.subscribe(function(allDonations){
-      const donations = allDonations.filter(function(d){
-        return d.projectId === ctx.projectId || (ctx.projectId === "carrot" && !d.projectId);
-      });
+    // Donations can only be spent while the project is still running.
+    let finished = !!ctx.finished;
+    let allForProject = null;
+    // Spent donations vanish straight away, before the database round-trip finishes.
+    const spent = new Set();
+    let donations = null;
+
+    async function spend(d){
+      spent.add(String(d.id));
+      renderRows();
+      try{
+        await DonationsStore.remove(d.id);
+        toast("Donation spent");
+      }catch(err){
+        console.error(err);
+        spent.delete(String(d.id));
+        renderRows();
+        toast("Couldn’t spend that donation — try again.");
+      }
+    }
+
+    function renderRows(){
+      if (allForProject === null) return;
+      donations = allForProject.filter(function(d){ return !spent.has(String(d.id)); });
       const body = wrap.querySelector("#lbBody");
       if (!body) return;
       if (!donations.length){
@@ -2858,11 +2887,38 @@
             '<img class="avatar" src="' + (d.photo || ICONS.brickAvatar) + '" alt="" />' +
             '<div class="row-name"><div class="n">' + escapeHtml(d.name || "Anonymous Citizen") + "</div></div>" +
             '<div class="row-amount"><div class="a">' + fmtAmount(d.amount) + '<span class="unit"> Dollars</span></div></div>' +
+            (finished ? "" : '<button type="button" class="row-dots" data-id="' + escapeHtml(d.id) + '" aria-label="More options">' + ICONS.dots + "</button>") +
           "</div>";
         });
         html += "</div>";
       });
       body.innerHTML = html;
+      body.querySelectorAll(".row-dots").forEach(function(btn){
+        btn.addEventListener("click", function(){
+          const d = donations.find(function(x){ return String(x.id) === btn.dataset.id; });
+          if (d) openMenu([{ label: "Spend", onClick: function(){ spend(d); } }]);
+        });
+      });
+    }
+
+    if (unsubscribeLb) unsubscribeLb();
+    unsubscribeLb = DonationsStore.subscribe(function(allDonations){
+      allForProject = allDonations.filter(function(d){
+        return d.projectId === ctx.projectId || (ctx.projectId === "carrot" && !d.projectId);
+      });
+      renderRows();
+    });
+
+    // If someone finishes the project while this page is open, the dots go away.
+    if (unsubscribePosts) unsubscribePosts();
+    unsubscribePosts = PostsStore.subscribe(function(posts){
+      const nowFinished = ctx.projectId === "carrot"
+        ? isCarrotFinished(posts)
+        : posts.some(function(p){ return p.id === ctx.projectId && p.finished; });
+      if (nowFinished !== finished){
+        finished = nowFinished;
+        renderRows();
+      }
     });
     return wrap;
   }
