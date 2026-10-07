@@ -1679,9 +1679,10 @@
   }
 
   /* ================= video preparation: convert to MP4 and shrink under the upload limit ================= */
-  const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+  const MAX_VIDEO_MB = 40;
+  const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
   // Aim below the cap because encoders don't hit a bitrate exactly.
-  const TARGET_VIDEO_BYTES = 44 * 1024 * 1024;
+  const TARGET_VIDEO_BYTES = Math.round(MAX_VIDEO_BYTES * 0.88);
   const MEDIABUNNY_URL = "https://cdn.jsdelivr.net/npm/mediabunny@1.58.1/dist/bundles/mediabunny.min.mjs";
   let mediabunnyPromise = null;
 
@@ -1704,7 +1705,7 @@
   async function prepareVideo(file, onProgress, control){
     if (!videoNeedsPrep(file)) return file;
     if (typeof VideoEncoder === "undefined" || typeof VideoDecoder === "undefined"){
-      throw friendlyError("This browser can’t convert videos. Use Chrome or Edge, or turn it into an MP4 under 50 MB first.");
+      throw friendlyError("This browser can’t convert videos. Use Chrome or Edge, or turn it into an MP4 under " + MAX_VIDEO_MB + " MB first.");
     }
     let MB;
     try{ MB = await loadMediabunny(); }
@@ -1750,12 +1751,12 @@
       } catch(e){
         if (e.friendly || e instanceof MB.ConversionCanceledError) throw e;
         console.error(e);
-        throw friendlyError("This browser couldn’t convert that video. Try Chrome or Edge, or turn it into an MP4 under 50 MB first.");
+        throw friendlyError("This browser couldn’t convert that video. Try Chrome or Edge, or turn it into an MP4 under " + MAX_VIDEO_MB + " MB first.");
       } finally {
         input.dispose();
       }
     }
-    throw friendlyError("Couldn’t get that video under 50 MB. Try trimming it shorter.");
+    throw friendlyError("Couldn’t get that video under " + MAX_VIDEO_MB + " MB. Try trimming it shorter.");
   }
 
   function openVideoUploadModal(){
@@ -1849,7 +1850,7 @@
         if (videoNeedsPrep(videoFile)){
           const shrinking = videoFile.size > MAX_VIDEO_BYTES;
           btn.textContent = (shrinking ? "Compressing…" : "Converting…");
-          statusEl.textContent = (shrinking ? "Compressing your video to fit under 50 MB" : "Converting your video to MP4") + " — keep this tab open.";
+          statusEl.textContent = (shrinking ? "Compressing your video to fit under " + MAX_VIDEO_MB + " MB" : "Converting your video to MP4") + " — keep this tab open.";
           fileToUpload = await prepareVideo(videoFile, function(p, attempt){
             if (canceled) return;
             btn.textContent = (shrinking ? "Compressing " : "Converting ") + Math.round(p * 100) + "%" + (attempt > 1 ? " (pass " + attempt + ")" : "");
