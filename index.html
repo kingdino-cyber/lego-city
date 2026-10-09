@@ -1098,8 +1098,31 @@
       if (supa) return supa.storage.from("videos").getPublicUrl(id).data.publicUrl;
       return "";
     }
-    return { init: init, upload: upload, urlFor: urlFor };
+    // Frees the space a stored file takes up. Needs a delete policy on the bucket; without
+    // one Supabase just reports that nothing was removed, so this never throws into the UI.
+    async function remove(id){
+      if (!supa || !id || localBlobs[id]) return false;
+      try{
+        const { data, error } = await supa.storage.from("videos").remove([id]);
+        if (error) throw error;
+        if (!data || !data.length){ console.warn("Storage file was not deleted (missing delete permission?):", id); return false; }
+        return true;
+      }catch(err){
+        console.warn("Couldn’t delete storage file:", id, err);
+        return false;
+      }
+    }
+    return { init: init, upload: upload, urlFor: urlFor, remove: remove };
   })();
+
+  // Where a video's file lives in storage (older videos have no saved id, so fall back to the URL).
+  function videoStoragePath(video){
+    if (video.videoAssetId) return video.videoAssetId;
+    const marker = "/storage/v1/object/public/videos/";
+    const url = String(video.videoUrl || "");
+    const at = url.indexOf(marker);
+    return at < 0 ? "" : decodeURIComponent(url.slice(at + marker.length).split("?")[0]);
+  }
 
   /* ================= helpers ================= */
   function el(html){
@@ -1645,7 +1668,14 @@
             "This video will be removed for good.",
             "Discard",
             function(){
-              VideosStore.remove(video.id);
+              // Delete the file only after the database row is gone, so a failed discard
+              // never leaves a listed video whose file has vanished.
+              VideosStore.remove(video.id)
+                .then(function(){ return AssetStore.remove(videoStoragePath(video)); })
+                .catch(function(err){
+                  console.error(err);
+                  toast("Couldn’t discard that video — try again.");
+                });
               if (onDeleted) onDeleted();
             }
           );
